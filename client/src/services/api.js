@@ -8,12 +8,16 @@ const api = axios.create({
 
 // ── Request — attach access token ─────────────────────────────
 api.interceptors.request.use((config) => {
-  // Import store lazily to avoid circular module graph
-  const { accessToken } = JSON.parse(
-    localStorage.getItem('vault-auth') || '{}'
-  );
-  if (accessToken) {
-    config.headers.Authorization = `Bearer ${accessToken}`;
+  try {
+    // Zustand persist stores: { state: { accessToken, user, ... }, version: N }
+    const raw = localStorage.getItem('vault-auth');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const token = parsed?.state?.accessToken;
+      if (token) config.headers.Authorization = `Bearer ${token}`;
+    }
+  } catch {
+    // localStorage unavailable or corrupt — continue without token
   }
   return config;
 });
@@ -25,23 +29,26 @@ api.interceptors.response.use(
   (res) => res,
   async (err) => {
     const original = err.config;
-    if (err.response?.status === 401 && !original._retry) {
+
+    // Never retry the refresh endpoint itself — that causes an infinite loop
+    const isRefreshCall = original?.url?.includes('/auth/refresh');
+
+    if (err.response?.status === 401 && !original._retry && !isRefreshCall) {
       original._retry = true;
       if (!refreshing) {
         refreshing = api.post('/auth/refresh').finally(() => (refreshing = null));
       }
       try {
         const { data } = await refreshing;
-        // Update persisted token
-        const stored = JSON.parse(localStorage.getItem('vault-auth') || '{}');
-        localStorage.setItem(
-          'vault-auth',
-          JSON.stringify({ ...stored, state: { ...stored.state, accessToken: data.accessToken } })
-        );
+        try {
+          const raw = localStorage.getItem('vault-auth');
+          const stored = raw ? JSON.parse(raw) : { state: {}, version: 0 };
+          stored.state = { ...stored.state, accessToken: data.accessToken };
+          localStorage.setItem('vault-auth', JSON.stringify(stored));
+        } catch { /* storage unavailable */ }
         original.headers.Authorization = `Bearer ${data.accessToken}`;
         return api(original);
       } catch {
-        // Refresh failed — clear auth and redirect
         localStorage.removeItem('vault-auth');
         window.location.href = '/login';
       }
