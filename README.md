@@ -327,4 +327,4 @@ Before deploying to production, address these additional items:
 
 ## License
 
-MIT
+
